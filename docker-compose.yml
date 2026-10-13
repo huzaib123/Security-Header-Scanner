@@ -1,0 +1,69 @@
+name: shs
+
+x-app-env: &app-env
+  NODE_ENV: production
+  MONGO_URI: mongodb://mongo:27017/shs
+  REDIS_URL: redis://redis:6379
+  SCAN_CACHE_TTL: ${SCAN_CACHE_TTL:-600}
+  SCAN_RATE_LIMIT: ${SCAN_RATE_LIMIT:-10}
+  SCAN_RATE_WINDOW: ${SCAN_RATE_WINDOW:-60}
+  SCAN_TIMEOUT_MS: ${SCAN_TIMEOUT_MS:-10000}
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    # Mongo logs every connection; keep it out of the `up` output.
+    attach: false
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build: ./server
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      PORT: 5060
+      TRUST_PROXY: 1
+      CLIENT_ORIGIN: ${CLIENT_ORIGIN:-http://localhost:8090}
+    ports:
+      - "${API_PORT:-5060}:5060"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Same image as the API, different entry point: consumes the BullMQ queue.
+  worker:
+    build: ./server
+    restart: unless-stopped
+    command: ["node", "src/worker.js"]
+    environment:
+      <<: *app-env
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-5}
+    healthcheck:
+      disable: true
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  mongo-data:
